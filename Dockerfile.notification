@@ -1,0 +1,10 @@
+FROM golang:1.23-alpine AS build
+WORKDIR /src/notification-service
+COPY notification-service ./
+RUN go mod download
+RUN go build -o /bin/notification-service ./cmd/notification-service
+
+FROM alpine:3.20
+WORKDIR /app
+COPY --from=build /bin/notification-service /app/notification-service
+CMD ["/app/notification-service"]

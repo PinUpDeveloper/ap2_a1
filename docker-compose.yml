@@ -1,0 +1,139 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: ap2-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ap2-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  order-db:
+    image: postgres:17-alpine
+    container_name: ap2-order-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1234
+      POSTGRES_DB: order_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - order_db_data:/var/lib/postgresql/data
+      - ./migrations/order-db:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d order_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  payment-db:
+    image: postgres:17-alpine
+    container_name: ap2-payment-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1234
+      POSTGRES_DB: payment_db
+    ports:
+      - "5434:5432"
+    volumes:
+      - payment_db_data:/var/lib/postgresql/data
+      - ./migrations/payment-db:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d payment_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.payment
+    container_name: ap2-payment-service
+    environment:
+      APP_PORT: 8081
+      GRPC_PORT: 50051
+      DB_DSN: host=payment-db port=5432 user=postgres password=1234 dbname=payment_db sslmode=disable
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    ports:
+      - "8081:8081"
+      - "50051:50051"
+    depends_on:
+      payment-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  order-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.order
+    container_name: ap2-order-service
+    environment:
+      APP_PORT: 8080
+      GRPC_PORT: 50052
+      DB_DSN: host=order-db port=5432 user=postgres password=1234 dbname=order_db sslmode=disable
+      PAYMENT_GRPC_ADDR: payment-service:50051
+      HTTP_TIMEOUT_SECONDS: 3
+      # Redis cache settings
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      CACHE_TTL_SECONDS: 300
+      # Rate limiter settings (bonus)
+      RATE_LIMIT_REQUESTS: 10
+      RATE_LIMIT_WINDOW_SECONDS: 60
+    ports:
+      - "8080:8080"
+      - "50052:50052"
+    depends_on:
+      order-db:
+        condition: service_healthy
+      payment-service:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.notification
+    container_name: ap2-notification-service
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      QUEUE_NAME: payment.completed
+      # Redis for idempotency
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      # Email provider: SIMULATED or REAL
+      PROVIDER_MODE: SIMULATED
+      # SMTP settings (used when PROVIDER_MODE=REAL)
+      SMTP_HOST: ""
+      SMTP_PORT: "587"
+      SMTP_USER: ""
+      SMTP_PASSWORD: ""
+      SMTP_FROM: "noreply@example.com"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      payment-service:
+        condition: service_started
+
+volumes:
+  order_db_data:
+  payment_db_data:

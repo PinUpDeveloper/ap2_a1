@@ -1,0 +1,13 @@
+FROM golang:1.23-alpine AS build
+WORKDIR /src
+COPY contracts ./contracts
+COPY order-service ./order-service
+WORKDIR /src/order-service
+RUN go mod download
+RUN go build -o /bin/order-service ./cmd/order-service
+
+FROM alpine:3.20
+WORKDIR /app
+COPY --from=build /bin/order-service /app/order-service
+EXPOSE 8080 50052
+CMD ["/app/order-service"]
